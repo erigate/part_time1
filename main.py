@@ -1,7 +1,11 @@
 import sys
 import os
 import datetime
+import json
 import logging
+import random
+import requests
+import xml.etree.ElementTree as ET
 import pandas as pd
 
 from PySide6.QtWidgets import (
@@ -11,9 +15,9 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QGroupBox, QComboBox, QTextEdit
 )
 from PySide6.QtCore import QDate, Qt, QRect
-from PySide6.QtGui import QPainter, QColor, QFont
+from PySide6.QtGui import QPainter, QColor, QFont, QPalette, QPixmap
 
-# 로그 설정: debug_log.txt 파일에 로그 기록 (덮어쓰기 모드)
+# 로그 설정
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -22,7 +26,7 @@ logging.basicConfig(
 )
 logging.debug("프로그램 시작")
 
-# ----- Log Dialog (로그 내용 보기) -----
+# ----- Log Dialog -----
 class LogDialog(QDialog):
     def __init__(self, log_file, parent=None):
         super().__init__(parent)
@@ -62,11 +66,11 @@ class ShiftChangeDialog(QDialog):
                 selected.append(i)
         return selected
 
-# ----- Custom Day-Of-Week Header Widget -----
+# ----- Custom Day-Of-Week Header Widget (요일 순서: "일 월 화 수 목 금 토") -----
 class DayOfWeekHeader(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.days = ["월", "화", "수", "목", "금", "토", "일"]
+        self.days = ["일", "월", "화", "수", "목", "금", "토"]
         self.setMinimumHeight(30)
     
     def resizeEvent(self, event):
@@ -84,11 +88,11 @@ class DayOfWeekHeader(QWidget):
             painter.drawText(rect, Qt.AlignCenter, day)
         painter.end()
 
-# ----- Schedule Manager -----
+# ----- Schedule Manager (변경 없음) -----
 class ScheduleManager:
     def __init__(self, excel_file="schedule.xlsx"):
         self.excel_file = excel_file
-        self.schedule = {}  # key: QDate.toString(Qt.ISODate), value: list of dicts {name, shift}
+        self.schedule = {}  # key: QDate.toString(Qt.ISODate)
         self.ensure_excel_file()
         self.load_schedule()
     
@@ -96,50 +100,44 @@ class ScheduleManager:
         if not os.path.exists(self.excel_file):
             df = pd.DataFrame(columns=["date", "name", "shift"])
             df.to_excel(self.excel_file, index=False)
-            logging.debug("엑셀 파일이 없어서 새로 생성함")
+            logging.debug("엑셀 파일 생성")
         else:
             try:
                 df = pd.read_excel(self.excel_file)
-                if not set(["date", "name", "shift"]).issubset(df.columns):
+                if not {"date", "name", "shift"}.issubset(set(df.columns)):
                     df = pd.DataFrame(columns=["date", "name", "shift"])
                     df.to_excel(self.excel_file, index=False)
-                    logging.debug("엑셀 파일의 컬럼이 올바르지 않아 재생성함")
+                    logging.debug("엑셀 파일 재생성")
             except Exception as e:
-                logging.error("Excel 파일 확인 오류: %s", e)
+                logging.error("엑셀 파일 확인 오류: %s", e)
                 df = pd.DataFrame(columns=["date", "name", "shift"])
                 df.to_excel(self.excel_file, index=False)
     
     def load_schedule(self):
         try:
             df = pd.read_excel(self.excel_file, converters={"date": lambda x: x})
-            logging.debug("엑셀 파일 로드 성공: %s", self.excel_file)
+            logging.debug("엑셀 로드 성공: %s", self.excel_file)
             if "date" not in df.columns:
                 self.schedule = {}
-                logging.error("엑셀 파일에 'date' 컬럼이 없음")
+                logging.error("엑셀에 'date' 컬럼 없음")
                 return
             for idx, row in df.iterrows():
-                logging.debug("Row %d: date=%s, name=%s, shift=%s", idx, row['date'], row['name'], row['shift'])
                 try:
                     date_val = pd.to_datetime(row['date'])
                     date_str = date_val.strftime("%Y-%m-%d")
-                    logging.debug("pd.to_datetime() 변환 성공: %s", date_str)
                 except Exception as e:
-                    logging.error("pd.to_datetime() 변환 실패: %s", e)
                     date_str = str(row['date']).strip().split(" ")[0]
-                    logging.debug("Fallback 변환: %s", date_str)
                 date = QDate.fromString(date_str, "yyyy-MM-dd")
                 if date.isValid():
                     key = date.toString(Qt.ISODate)
                     if key not in self.schedule:
                         self.schedule[key] = []
-                    # 이름을 문자열로 변환하여 저장
                     self.schedule[key].append({"name": str(row['name']), "shift": row['shift']})
-                    logging.debug("스케줄 추가됨: %s -> %s", key, {"name": str(row['name']), "shift": row['shift']})
                 else:
-                    logging.error("QDate 변환 실패: date_str=%s", date_str)
+                    logging.error("QDate 변환 실패: %s", date_str)
             logging.debug("최종 스케줄: %s", self.schedule)
         except Exception as e:
-            logging.error("Excel 파일 읽기 오류: %s", e)
+            logging.error("엑셀 읽기 오류: %s", e)
             self.schedule = {}
     
     def save_schedule(self):
@@ -149,7 +147,7 @@ class ScheduleManager:
                 data.append({"date": date_str, "name": entry["name"], "shift": entry["shift"]})
         df = pd.DataFrame(data, columns=["date", "name", "shift"])
         df.to_excel(self.excel_file, index=False)
-        logging.debug("스케줄 저장됨: %s", self.schedule)
+        logging.debug("스케줄 저장: %s", self.schedule)
     
     def export_to_excel(self):
         data = []
@@ -157,10 +155,10 @@ class ScheduleManager:
             for entry in entries:
                 data.append({"date": date_str, "name": entry["name"], "shift": entry["shift"]})
         df = pd.DataFrame(data, columns=["date", "name", "shift"])
-        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
         filename = f"{timestamp}.xlsx"
         df.to_excel(filename, index=False)
-        logging.debug("엑셀로 출력: %s", filename)
+        logging.debug("엑셀 출력: %s", filename)
         return filename
     
     def add_schedule(self, name, shifts, weekday_info, start_date, end_date):
@@ -178,11 +176,9 @@ class ScheduleManager:
                         base_shift = biweekly_combo.currentText()
                         shift_to_use = base_shift if week_offset % 2 == 0 else ("PM" if base_shift == "AM" else "AM")
                         self.schedule[key].append({"name": str(name), "shift": shift_to_use})
-                        logging.debug("격주 스케줄 추가: %s -> %s", key, {"name": str(name), "shift": shift_to_use})
                     else:
                         for shift in shifts:
                             self.schedule[key].append({"name": str(name), "shift": shift})
-                            logging.debug("글로벌 스케줄 추가: %s -> %s", key, {"name": str(name), "shift": shift})
             current = current.addDays(1)
         self.save_schedule()
     
@@ -191,14 +187,9 @@ class ScheduleManager:
         while current <= end_date:
             key = current.toString(Qt.ISODate)
             if key in self.schedule:
-                before = len(self.schedule[key])
-                # 이름 비교를 문자열로 처리
                 self.schedule[key] = [entry for entry in self.schedule[key] if entry["name"] != str(name)]
-                after = len(self.schedule.get(key, []))
-                logging.debug("삭제 전 %d, 삭제 후 %d for key %s", before, after, key)
                 if not self.schedule[key]:
                     del self.schedule[key]
-                    logging.debug("스케줄 키 삭제됨: %s", key)
             current = current.addDays(1)
         self.save_schedule()
     
@@ -208,14 +199,15 @@ class ScheduleManager:
             for idx in indices:
                 entry = self.schedule[key][idx]
                 entry["shift"] = "AM" if entry["shift"] == "PM" else "PM"
-                logging.debug("스케줄 토글: key=%s, index=%d, new shift=%s", key, idx, entry["shift"])
             self.save_schedule()
 
-# ----- Custom Calendar Widget -----
+# ----- Custom Calendar Widget (전체 근무자 출력, 고정 폰트 크기) -----
 class CustomCalendar(QCalendarWidget):
-    def __init__(self, schedule_manager, *args, **kwargs):
+    def __init__(self, schedule_manager, holiday_info, name_color_map, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.schedule_manager = schedule_manager
+        self.holiday_info = holiday_info  # dict: "yyyy-MM-dd" -> holiday name
+        self.name_color_map = name_color_map  # dict: 근무자 이름 -> QColor
         self.setGridVisible(True)
         self.setHorizontalHeaderFormat(QCalendarWidget.NoHorizontalHeader)
         self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
@@ -223,37 +215,57 @@ class CustomCalendar(QCalendarWidget):
     def paintCell(self, painter, rect, date):
         painter.save()
         super().paintCell(painter, rect, date)
+        
+        # 중앙 숫자 덮개: 캘린더 배경색(QPalette.Base) 사용
+        bg_color = self.palette().color(QPalette.Base)
+        center_rect = QRect(rect.center().x() - 8, rect.center().y() - 6, 16, 12)
+        painter.fillRect(center_rect, bg_color)
+        
+        # 날짜 숫자 (좌측 상단): 토, 일, 공휴일은 빨간색
+        date_color = Qt.black
+        date_str = date.toString("yyyy-MM-dd")
+        if date.dayOfWeek() in (6, 7) or date_str in self.holiday_info:
+            date_color = QColor("red")
         date_font = QFont("Arial", 14, QFont.Bold)
         painter.setFont(date_font)
-        painter.setPen(Qt.black)
+        painter.setPen(date_color)
         painter.drawText(rect.adjusted(5, 5, -5, -5), Qt.AlignTop | Qt.AlignLeft, str(date.day()))
+        
+        # 공휴일이면, 오른쪽 아래에 작은 글씨로 명칭 표시
+        if date_str in self.holiday_info:
+            holiday_name = self.holiday_info[date_str]
+            holiday_font = QFont("Arial", 8)
+            painter.setFont(holiday_font)
+            painter.setPen(QColor("red"))
+            painter.drawText(rect.adjusted(0, 0, -2, -2), Qt.AlignBottom | Qt.AlignRight, holiday_name)
+        
+        # 스케줄 항목 표시: 모든 근무자 정보를 shift별(AM 우선) 고정 폰트 크기(예: 10pt)로 출력
         key = date.toString(Qt.ISODate)
         if key in self.schedule_manager.schedule:
-            entries = self.schedule_manager.schedule[key]
-            num_entries = len(entries)
-            available_height = rect.height() - 30
-            total_default_height = num_entries * (24 + 5)
-            scale = min(1.0, available_height / total_default_height) if num_entries > 0 else 1.0
-            circle_diameter = int(24 * scale)
-            entry_font_size = int(12 * scale)
+            # 정렬: AM이 먼저 나오도록
+            entries = sorted(self.schedule_manager.schedule[key], key=lambda x: 0 if x["shift"] == "AM" else 1)
+            entry_font_size = 10  # 고정 폰트 크기
+            entry_font = QFont("Arial", entry_font_size, QFont.Bold)
+            painter.setFont(entry_font)
+            line_height = entry_font_size + 2
             entry_y = rect.y() + 30
             for entry in entries:
                 shift = entry["shift"]
                 name = entry["name"]
-                circle_rect = QRect(rect.x() + 5, entry_y, circle_diameter, circle_diameter)
-                circle_color = QColor("green") if shift == "AM" else QColor("red") if shift == "PM" else Qt.black
-                painter.setPen(circle_color)
-                painter.drawEllipse(circle_rect)
-                painter.drawText(circle_rect, Qt.AlignCenter, shift)
-                entry_font_bold = QFont("Arial", entry_font_size, QFont.Bold)
-                painter.setFont(entry_font_bold)
-                painter.setPen(Qt.black)
-                painter.drawText(
-                    int(rect.x() + 5 + circle_diameter + 5),
-                    int(entry_y + circle_diameter/2 + entry_font_size/2 - 2),
-                    str(name)
-                )
-                entry_y += circle_diameter + 5
+                shift_text = shift
+                shift_color = QColor("green") if shift == "AM" else QColor("darkred")
+                painter.setPen(shift_color)
+                painter.drawText(rect.x() + 5, entry_y + entry_font_size, shift_text)
+                fm = painter.fontMetrics()
+                shift_width = fm.horizontalAdvance(shift_text)
+                if name not in self.name_color_map:
+                    r = random.randint(0, 255)
+                    g = random.randint(0, 255)
+                    b = random.randint(0, 255)
+                    self.name_color_map[name] = QColor(r, g, b)
+                painter.setPen(self.name_color_map[name])
+                painter.drawText(rect.x() + 5 + shift_width, entry_y + entry_font_size, " " + name)
+                entry_y += line_height
         painter.restore()
     
     def contextMenuEvent(self, event):
@@ -270,7 +282,51 @@ class CustomCalendar(QCalendarWidget):
                     self.schedule_manager.toggle_shift(date, indices)
                     self.updateCells()
 
-# ----- 날짜 범위 선택 다이얼로그 -----
+# ----- 공휴일 정보 가져오기 (전체년도, 캐싱 포함) -----
+def fetch_holiday_info_for_year(year):
+    cache_file = f"holidays_{year}.json"
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                holiday_info = json.load(f)
+            logging.debug("캐시 로드 성공: %s", cache_file)
+            return holiday_info
+        except Exception as e:
+            logging.error("캐시 로드 오류: %s", e)
+    holiday_info = {}
+    try:
+        with open("key.txt", "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+            decoding_key = lines[1]
+    except Exception as e:
+        logging.error("key.txt 오류: %s", e)
+        return holiday_info
+    for month in range(1, 13):
+        month_str = f"{month:02d}"
+        url = (f"http://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/"
+               f"getRestDeInfo?solYear={year}&solMonth={month_str}&ServiceKey={decoding_key}")
+        try:
+            response = requests.get(url)
+            tree = ET.fromstring(response.content)
+            for item in tree.iter("item"):
+                locdate = item.find("locdate")
+                date_nm = item.find("dateName")
+                if locdate is not None and locdate.text and date_nm is not None and date_nm.text:
+                    d = locdate.text
+                    formatted = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                    holiday_info[formatted] = date_nm.text
+            logging.debug("월 %s 정보 가져옴", month_str)
+        except Exception as e:
+            logging.error("API 호출 오류 (월 %s): %s", month_str, e)
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(holiday_info, f, ensure_ascii=False, indent=2)
+        logging.debug("캐시 저장: %s", cache_file)
+    except Exception as e:
+        logging.error("캐시 저장 오류: %s", e)
+    return holiday_info
+
+# ----- DateRangeDialog -----
 class DateRangeDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -304,11 +360,15 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("알바 근태 관리")
         self.schedule_manager = ScheduleManager()
+        # 프로그램 실행 시 2025년도 공휴일 정보 자동 가져오기
+        self.holiday_info = fetch_holiday_info_for_year(2025)
+        # 근무자 이름 색상 맵
+        self.name_color_map = {}
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
         
-        # 좌측 패널: 추가/삭제/엑셀 출력/로그 보기 폼 (최대 폭 300)
+        # 좌측 패널: 추가/삭제/엑셀 출력/공휴일 정보 가져오기/달력 캡쳐/로그 확인
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_widget.setMaximumWidth(300)
@@ -341,13 +401,17 @@ class MainWindow(QMainWindow):
             weekday_vlayout.addLayout(hbox)
             self.weekday_checks[num] = (day_cb, biweekly_cb, biweekly_combo)
         add_form.addRow("요일 선택:", weekday_vlayout)
+        # 기간 선택과 "요번달" 체크박스 추가 (근무자 추가)
         date_range_layout = QHBoxLayout()
         self.date_range_display = QLineEdit()
         self.date_range_display.setReadOnly(True)
         self.date_range_button = QPushButton("날짜 선택")
         self.date_range_button.clicked.connect(self.select_add_date_range)
+        self.this_month_add = QCheckBox("요번달")
+        self.this_month_add.toggled.connect(self.set_this_month_add)
         date_range_layout.addWidget(self.date_range_display)
         date_range_layout.addWidget(self.date_range_button)
+        date_range_layout.addWidget(self.this_month_add)
         add_form.addRow("기간:", date_range_layout)
         add_layout.addLayout(add_form)
         self.add_button = QPushButton("근무자 추가")
@@ -367,8 +431,11 @@ class MainWindow(QMainWindow):
         self.del_date_range_display.setReadOnly(True)
         self.del_date_range_button = QPushButton("날짜 선택")
         self.del_date_range_button.clicked.connect(self.select_del_date_range)
+        self.this_month_del = QCheckBox("요번달")
+        self.this_month_del.toggled.connect(self.set_this_month_del)
         del_date_layout.addWidget(self.del_date_range_display)
         del_date_layout.addWidget(self.del_date_range_button)
+        del_date_layout.addWidget(self.this_month_del)
         del_form.addRow("기간:", del_date_layout)
         del_layout.addLayout(del_form)
         self.del_button = QPushButton("근무자 삭제")
@@ -383,6 +450,22 @@ class MainWindow(QMainWindow):
         self.export_button.clicked.connect(self.export_schedule)
         export_layout.addWidget(self.export_button)
         left_layout.addWidget(export_group)
+        
+        # [공휴일 정보 가져오기] 그룹
+        holiday_group = QGroupBox("공휴일 정보 가져오기")
+        holiday_layout = QVBoxLayout(holiday_group)
+        self.holiday_button = QPushButton("공휴일 정보 가져오기")
+        self.holiday_button.clicked.connect(self.fetch_holiday_info)
+        holiday_layout.addWidget(self.holiday_button)
+        left_layout.addWidget(holiday_group)
+        
+        # [달력 캡쳐] 그룹
+        capture_group = QGroupBox("달력 캡쳐")
+        capture_layout = QVBoxLayout(capture_group)
+        self.capture_button = QPushButton("캡쳐 저장")
+        self.capture_button.clicked.connect(self.capture_calendar)
+        capture_layout.addWidget(self.capture_button)
+        left_layout.addWidget(capture_group)
         
         # [로그 확인] 그룹
         log_group = QGroupBox("로그 확인")
@@ -399,8 +482,8 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         self.dayHeader = DayOfWeekHeader()
         right_layout.addWidget(self.dayHeader)
-        self.calendar = CustomCalendar(self.schedule_manager)
-        self.calendar.setMinimumSize(600, 600)
+        self.calendar = CustomCalendar(self.schedule_manager, self.holiday_info, self.name_color_map)
+        self.calendar.setMinimumSize(800, 800)
         right_layout.addWidget(self.calendar)
         main_layout.addWidget(right_widget)
         
@@ -408,7 +491,37 @@ class MainWindow(QMainWindow):
         self.add_end_date = None
         self.del_start_date = None
         self.del_end_date = None
-    
+
+    def set_this_month_add(self, checked):
+        if checked:
+            today = QDate.currentDate()
+            self.add_start_date = QDate(today.year(), today.month(), 1)
+            self.add_end_date = QDate(today.year(), today.month(), today.daysInMonth())
+            self.date_range_display.setText(
+                f"{self.add_start_date.toString('yyyy-MM-dd')} ~ {self.add_end_date.toString('yyyy-MM-dd')}"
+            )
+            self.date_range_button.setEnabled(False)
+        else:
+            self.add_start_date = None
+            self.add_end_date = None
+            self.date_range_display.clear()
+            self.date_range_button.setEnabled(True)
+
+    def set_this_month_del(self, checked):
+        if checked:
+            today = QDate.currentDate()
+            self.del_start_date = QDate(today.year(), today.month(), 1)
+            self.del_end_date = QDate(today.year(), today.month(), today.daysInMonth())
+            self.del_date_range_display.setText(
+                f"{self.del_start_date.toString('yyyy-MM-dd')} ~ {self.del_end_date.toString('yyyy-MM-dd')}"
+            )
+            self.del_date_range_button.setEnabled(False)
+        else:
+            self.del_start_date = None
+            self.del_end_date = None
+            self.del_date_range_display.clear()
+            self.del_date_range_button.setEnabled(True)
+
     def update_del_combo(self):
         names = set()
         for entries in self.schedule_manager.schedule.values():
@@ -423,20 +536,28 @@ class MainWindow(QMainWindow):
             self.del_name_combo.setCurrentIndex(index)
     
     def select_add_date_range(self):
+        if self.this_month_add.isChecked():
+            return
         dialog = DateRangeDialog(self)
         if dialog.exec() == QDialog.Accepted:
             start_date, end_date = dialog.getDateRange()
             self.add_start_date = start_date
             self.add_end_date = end_date
-            self.date_range_display.setText(f"{start_date.toString('yyyy-MM-dd')} ~ {end_date.toString('yyyy-MM-dd')}")
+            self.date_range_display.setText(
+                f"{start_date.toString('yyyy-MM-dd')} ~ {end_date.toString('yyyy-MM-dd')}"
+            )
     
     def select_del_date_range(self):
+        if self.this_month_del.isChecked():
+            return
         dialog = DateRangeDialog(self)
         if dialog.exec() == QDialog.Accepted:
             start_date, end_date = dialog.getDateRange()
             self.del_start_date = start_date
             self.del_end_date = end_date
-            self.del_date_range_display.setText(f"{start_date.toString('yyyy-MM-dd')} ~ {end_date.toString('yyyy-MM-dd')}")
+            self.del_date_range_display.setText(
+                f"{start_date.toString('yyyy-MM-dd')} ~ {end_date.toString('yyyy-MM-dd')}"
+            )
     
     def add_employee_schedule(self):
         name = self.name_edit.text().strip()
@@ -483,13 +604,73 @@ class MainWindow(QMainWindow):
         filename = self.schedule_manager.export_to_excel()
         QMessageBox.information(self, "엑셀 출력 완료", f"엑셀 파일이 생성되었습니다.\n파일명: {filename}")
 
+    def fetch_holiday_info(self):
+        current_year = datetime.datetime.now().year
+        self.holiday_info = fetch_holiday_info_for_year(current_year)
+        self.calendar.holiday_info = self.holiday_info
+        self.calendar.updateCells()
+        QMessageBox.information(self, "완료", "공휴일 정보를 가져왔습니다.")
+
+    def capture_calendar(self):
+        pixmap = self.calendar.grab()
+        timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
+        filename = f"{timestamp}.jpg"
+        if pixmap.save(filename, "JPG"):
+            QMessageBox.information(self, "캡쳐 완료", f"달력 캡쳐 파일이 저장되었습니다.\n파일명: {filename}")
+        else:
+            QMessageBox.warning(self, "캡쳐 오류", "달력 캡쳐 저장에 실패하였습니다.")
+
     def open_log_dialog(self):
         log_dialog = LogDialog("debug_log.txt", self)
         log_dialog.exec()
 
+# ----- 공휴일 정보 가져오기 (전체년도, 캐싱 포함) -----
+def fetch_holiday_info_for_year(year):
+    cache_file = f"holidays_{year}.json"
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, "r", encoding="utf-8") as f:
+                holiday_info = json.load(f)
+            logging.debug("캐시 로드 성공: %s", cache_file)
+            return holiday_info
+        except Exception as e:
+            logging.error("캐시 로드 오류: %s", e)
+    holiday_info = {}
+    try:
+        with open("key.txt", "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+            decoding_key = lines[1]
+    except Exception as e:
+        logging.error("key.txt 오류: %s", e)
+        return holiday_info
+    for month in range(1, 13):
+        month_str = f"{month:02d}"
+        url = (f"http://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/"
+               f"getRestDeInfo?solYear={year}&solMonth={month_str}&ServiceKey={decoding_key}")
+        try:
+            response = requests.get(url)
+            tree = ET.fromstring(response.content)
+            for item in tree.iter("item"):
+                locdate = item.find("locdate")
+                date_nm = item.find("dateName")
+                if locdate is not None and locdate.text and date_nm is not None and date_nm.text:
+                    d = locdate.text
+                    formatted = f"{d[:4]}-{d[4:6]}-{d[6:]}"
+                    holiday_info[formatted] = date_nm.text
+            logging.debug("월 %s 정보 가져옴", month_str)
+        except Exception as e:
+            logging.error("API 호출 오류 (월 %s): %s", month_str, e)
+    try:
+        with open(cache_file, "w", encoding="utf-8") as f:
+            json.dump(holiday_info, f, ensure_ascii=False, indent=2)
+        logging.debug("캐시 저장: %s", cache_file)
+    except Exception as e:
+        logging.error("캐시 저장 오류: %s", e)
+    return holiday_info
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(1000, 700)
+    window.resize(1000, 800)
     window.show()
     sys.exit(app.exec())
