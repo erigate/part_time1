@@ -470,3 +470,5 @@ if __name__ == "__main__":
     window.resize(1000, 700)
     window.show()
     sys.exit(app.exec())
+
+#주석테스트!
