@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QCalendarWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QPushButton, QCheckBox, QMessageBox, QDialog,
-    QDialogButtonBox, QGroupBox, QComboBox, QTextEdit
+    QDialogButtonBox, QGroupBox, QComboBox, QTextEdit, QMenu
 )
 from PySide6.QtCore import QDate, Qt, QRect
 from PySide6.QtGui import QPainter, QColor, QFont, QPalette, QPixmap
@@ -58,7 +58,85 @@ class ShiftChangeDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         self.layout.addWidget(buttons)
-    
+    def getSelectedIndices(self):
+        selected = []
+        for i, cb in enumerate(self.checkboxes):
+            if cb.isChecked():
+                selected.append(i)
+        return selected
+
+# ----- Attendance Dialog (결근/지각 상태 변경) -----
+class AttendanceDialog(QDialog):
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("출석 상태 변경")
+        self.layout = QVBoxLayout(self)
+        self.entries = entries  # 각 entry에 "absent"와 "tardy" 속성이 있음
+        self.widgets = []  # 각 entry에 대한 위젯 그룹
+        for entry in entries:
+            hbox = QHBoxLayout()
+            text = f"{entry['shift']} {entry['name']}"
+            # 결근 체크박스
+            absent_cb = QCheckBox("결근")
+            absent_cb.setChecked(entry.get("absent", False))
+            # 지각 체크박스
+            tardy_cb = QCheckBox("지각")
+            tardy_cb.setChecked(entry.get("tardy", False))
+            # 읽기전용 텍스트로 해당 근무자 표시
+            text_edit = QLineEdit(text)
+            text_edit.setReadOnly(True)
+            hbox.addWidget(text_edit)
+            hbox.addWidget(absent_cb)
+            hbox.addWidget(tardy_cb)
+            self.layout.addLayout(hbox)
+            self.widgets.append((absent_cb, tardy_cb))
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.layout.addWidget(buttons)
+    def accept(self):
+        for i, (absent_cb, tardy_cb) in enumerate(self.widgets):
+            self.entries[i]["absent"] = absent_cb.isChecked()
+            self.entries[i]["tardy"] = tardy_cb.isChecked()
+        super().accept()
+
+# ----- Add Worker Dialog (해당일자 근무자 추가) -----
+class AddWorkerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("해당일자 근무자 추가")
+        layout = QFormLayout(self)
+        self.name_edit = QLineEdit()
+        self.shift_combo = QComboBox()
+        self.shift_combo.addItems(["오전", "오후"])  # 오전 -> AM, 오후 -> PM
+        layout.addRow("이름:", self.name_edit)
+        layout.addRow("근무조:", self.shift_combo)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+    def getValues(self):
+        name = self.name_edit.text().strip()
+        shift_text = self.shift_combo.currentText()
+        shift = "AM" if shift_text == "오전" else "PM"
+        return name, shift
+
+# ----- Delete Worker Dialog (해당일자 근무자 삭제) -----
+class DeleteWorkerDialog(QDialog):
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("해당일자 근무자 삭제")
+        self.layout = QVBoxLayout(self)
+        self.checkboxes = []
+        for entry in entries:
+            cb = QCheckBox(f"{entry['shift']} {entry['name']}")
+            cb.setChecked(False)
+            self.checkboxes.append(cb)
+            self.layout.addWidget(cb)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.layout.addWidget(buttons)
     def getSelectedIndices(self):
         selected = []
         for i, cb in enumerate(self.checkboxes):
@@ -72,11 +150,9 @@ class DayOfWeekHeader(QWidget):
         super().__init__(parent)
         self.days = ["일", "월", "화", "수", "목", "금", "토"]
         self.setMinimumHeight(30)
-    
     def resizeEvent(self, event):
         self.update()
         super().resizeEvent(event)
-    
     def paintEvent(self, event):
         painter = QPainter(self)
         width = self.width() / 7
@@ -88,7 +164,7 @@ class DayOfWeekHeader(QWidget):
             painter.drawText(rect, Qt.AlignCenter, day)
         painter.end()
 
-# ----- Schedule Manager (변경 없음) -----
+# ----- Schedule Manager (absent, tardy 속성 추가) -----
 class ScheduleManager:
     def __init__(self, excel_file="schedule.xlsx"):
         self.excel_file = excel_file
@@ -98,19 +174,19 @@ class ScheduleManager:
     
     def ensure_excel_file(self):
         if not os.path.exists(self.excel_file):
-            df = pd.DataFrame(columns=["date", "name", "shift"])
+            df = pd.DataFrame(columns=["date", "name", "shift", "absent", "tardy"])
             df.to_excel(self.excel_file, index=False)
             logging.debug("엑셀 파일 생성")
         else:
             try:
                 df = pd.read_excel(self.excel_file)
-                if not {"date", "name", "shift"}.issubset(set(df.columns)):
-                    df = pd.DataFrame(columns=["date", "name", "shift"])
+                if not {"date", "name", "shift", "absent", "tardy"}.issubset(set(df.columns)):
+                    df = pd.DataFrame(columns=["date", "name", "shift", "absent", "tardy"])
                     df.to_excel(self.excel_file, index=False)
                     logging.debug("엑셀 파일 재생성")
             except Exception as e:
                 logging.error("엑셀 파일 확인 오류: %s", e)
-                df = pd.DataFrame(columns=["date", "name", "shift"])
+                df = pd.DataFrame(columns=["date", "name", "shift", "absent", "tardy"])
                 df.to_excel(self.excel_file, index=False)
     
     def load_schedule(self):
@@ -132,7 +208,14 @@ class ScheduleManager:
                     key = date.toString(Qt.ISODate)
                     if key not in self.schedule:
                         self.schedule[key] = []
-                    self.schedule[key].append({"name": str(row['name']), "shift": row['shift']})
+                    absent = bool(row['absent']) if "absent" in df.columns else False
+                    tardy = bool(row['tardy']) if "tardy" in df.columns else False
+                    self.schedule[key].append({
+                        "name": str(row['name']),
+                        "shift": row['shift'],
+                        "absent": absent,
+                        "tardy": tardy
+                    })
                 else:
                     logging.error("QDate 변환 실패: %s", date_str)
             logging.debug("최종 스케줄: %s", self.schedule)
@@ -144,8 +227,14 @@ class ScheduleManager:
         data = []
         for date_str, entries in self.schedule.items():
             for entry in entries:
-                data.append({"date": date_str, "name": entry["name"], "shift": entry["shift"]})
-        df = pd.DataFrame(data, columns=["date", "name", "shift"])
+                data.append({
+                    "date": date_str,
+                    "name": entry["name"],
+                    "shift": entry["shift"],
+                    "absent": entry.get("absent", False),
+                    "tardy": entry.get("tardy", False)
+                })
+        df = pd.DataFrame(data, columns=["date", "name", "shift", "absent", "tardy"])
         df.to_excel(self.excel_file, index=False)
         logging.debug("스케줄 저장: %s", self.schedule)
     
@@ -153,8 +242,14 @@ class ScheduleManager:
         data = []
         for date_str, entries in self.schedule.items():
             for entry in entries:
-                data.append({"date": date_str, "name": entry["name"], "shift": entry["shift"]})
-        df = pd.DataFrame(data, columns=["date", "name", "shift"])
+                data.append({
+                    "date": date_str,
+                    "name": entry["name"],
+                    "shift": entry["shift"],
+                    "absent": entry.get("absent", False),
+                    "tardy": entry.get("tardy", False)
+                })
+        df = pd.DataFrame(data, columns=["date", "name", "shift", "absent", "tardy"])
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
         filename = f"{timestamp}.xlsx"
         df.to_excel(filename, index=False)
@@ -175,10 +270,10 @@ class ScheduleManager:
                         week_offset = (current.toJulianDay() - start_date.toJulianDay()) // 7
                         base_shift = biweekly_combo.currentText()
                         shift_to_use = base_shift if week_offset % 2 == 0 else ("PM" if base_shift == "AM" else "AM")
-                        self.schedule[key].append({"name": str(name), "shift": shift_to_use})
+                        self.schedule[key].append({"name": str(name), "shift": shift_to_use, "absent": False, "tardy": False})
                     else:
                         for shift in shifts:
-                            self.schedule[key].append({"name": str(name), "shift": shift})
+                            self.schedule[key].append({"name": str(name), "shift": shift, "absent": False, "tardy": False})
             current = current.addDays(1)
         self.save_schedule()
     
@@ -201,7 +296,7 @@ class ScheduleManager:
                 entry["shift"] = "AM" if entry["shift"] == "PM" else "PM"
             self.save_schedule()
 
-# ----- Custom Calendar Widget (전체 근무자 출력, 고정 폰트 크기) -----
+# ----- Custom Calendar Widget -----
 class CustomCalendar(QCalendarWidget):
     def __init__(self, schedule_manager, holiday_info, name_color_map, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -216,12 +311,12 @@ class CustomCalendar(QCalendarWidget):
         painter.save()
         super().paintCell(painter, rect, date)
         
-        # 중앙 숫자 덮개: 캘린더 배경색(QPalette.Base) 사용
+        # 중앙 숫자 덮개: 캘린더 배경색(QPalette.Base)
         bg_color = self.palette().color(QPalette.Base)
         center_rect = QRect(rect.center().x() - 8, rect.center().y() - 6, 16, 12)
         painter.fillRect(center_rect, bg_color)
         
-        # 날짜 숫자 (좌측 상단): 토, 일, 공휴일은 빨간색
+        # 날짜 숫자 (좌측 상단)
         date_color = Qt.black
         date_str = date.toString("yyyy-MM-dd")
         if date.dayOfWeek() in (6, 7) or date_str in self.holiday_info:
@@ -231,7 +326,7 @@ class CustomCalendar(QCalendarWidget):
         painter.setPen(date_color)
         painter.drawText(rect.adjusted(5, 5, -5, -5), Qt.AlignTop | Qt.AlignLeft, str(date.day()))
         
-        # 공휴일이면, 오른쪽 아래에 작은 글씨로 명칭 표시
+        # 공휴일명칭 (오른쪽 아래)
         if date_str in self.holiday_info:
             holiday_name = self.holiday_info[date_str]
             holiday_font = QFont("Arial", 8)
@@ -239,12 +334,11 @@ class CustomCalendar(QCalendarWidget):
             painter.setPen(QColor("red"))
             painter.drawText(rect.adjusted(0, 0, -2, -2), Qt.AlignBottom | Qt.AlignRight, holiday_name)
         
-        # 스케줄 항목 표시: 모든 근무자 정보를 shift별(AM 우선) 고정 폰트 크기(예: 10pt)로 출력
+        # 스케줄 항목 출력: 모든 항목을 shift별(AM 우선)로 출력, 폰트 크기는 10pt 고정
         key = date.toString(Qt.ISODate)
         if key in self.schedule_manager.schedule:
-            # 정렬: AM이 먼저 나오도록
-            entries = sorted(self.schedule_manager.schedule[key], key=lambda x: 0 if x["shift"] == "AM" else 1)
-            entry_font_size = 10  # 고정 폰트 크기
+            entries = sorted(self.schedule_manager.schedule[key], key=lambda x: 0 if x["shift"]=="AM" else 1)
+            entry_font_size = 10
             entry_font = QFont("Arial", entry_font_size, QFont.Bold)
             painter.setFont(entry_font)
             line_height = entry_font_size + 2
@@ -252,35 +346,80 @@ class CustomCalendar(QCalendarWidget):
             for entry in entries:
                 shift = entry["shift"]
                 name = entry["name"]
-                shift_text = shift
-                shift_color = QColor("green") if shift == "AM" else QColor("darkred")
-                painter.setPen(shift_color)
-                painter.drawText(rect.x() + 5, entry_y + entry_font_size, shift_text)
-                fm = painter.fontMetrics()
-                shift_width = fm.horizontalAdvance(shift_text)
-                if name not in self.name_color_map:
-                    r = random.randint(0, 255)
-                    g = random.randint(0, 255)
-                    b = random.randint(0, 255)
-                    self.name_color_map[name] = QColor(r, g, b)
-                painter.setPen(self.name_color_map[name])
-                painter.drawText(rect.x() + 5 + shift_width, entry_y + entry_font_size, " " + name)
+                # 결근이면 회색 + 취소선, 지각이면 주황색 텍스트
+                if entry.get("absent", False):
+                    painter.setPen(QColor("gray"))
+                    text = f"{shift} {name}"
+                    painter.drawText(rect.x() + 5, entry_y + entry_font_size, text)
+                    fm = painter.fontMetrics()
+                    text_width = fm.horizontalAdvance(text)
+                    y_mid = entry_y + entry_font_size / 2
+                    painter.drawLine(rect.x() + 5, y_mid, rect.x() + 5 + text_width, y_mid)
+                elif entry.get("tardy", False):
+                    tardy_color = QColor("darkorange")
+                    painter.setPen(tardy_color)
+                    text = f"{shift} {name} (지각)"
+                    painter.drawText(rect.x() + 5, entry_y + entry_font_size, text)
+                else:
+                    shift_color = QColor("green") if shift=="AM" else QColor("darkred")
+                    painter.setPen(shift_color)
+                    painter.drawText(rect.x() + 5, entry_y + entry_font_size, shift)
+                    fm = painter.fontMetrics()
+                    shift_width = fm.horizontalAdvance(shift)
+                    if name not in self.name_color_map:
+                        r = random.randint(0, 255)
+                        g = random.randint(0, 255)
+                        b = random.randint(0, 255)
+                        self.name_color_map[name] = QColor(r, g, b)
+                    painter.setPen(self.name_color_map[name])
+                    painter.drawText(rect.x() + 5 + shift_width, entry_y + entry_font_size, " " + name)
                 entry_y += line_height
         painter.restore()
     
     def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        action_shift_change = menu.addAction("근무조 변경")
+        action_attendance = menu.addAction("출석 상태 변경")
+        action_add = menu.addAction("해당일자 근무자 추가")
+        action_delete = menu.addAction("해당일자 근무자 삭제")
+        action = menu.exec(event.globalPos())
         date = self.selectedDate()
         key = date.toString(Qt.ISODate)
-        if key in self.schedule_manager.schedule:
-            entries = self.schedule_manager.schedule[key]
-            if not entries:
-                return
-            dlg = ShiftChangeDialog(entries, self)
-            if dlg.exec() == QDialog.Accepted:
-                indices = dlg.getSelectedIndices()
-                if indices:
-                    self.schedule_manager.toggle_shift(date, indices)
+        if action == action_shift_change:
+            if key in self.schedule_manager.schedule:
+                dlg = ShiftChangeDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    indices = dlg.getSelectedIndices()
+                    if indices:
+                        self.schedule_manager.toggle_shift(date, indices)
+                        self.updateCells()
+        elif action == action_attendance:
+            if key in self.schedule_manager.schedule:
+                dlg = AttendanceDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    self.schedule_manager.save_schedule()
                     self.updateCells()
+        elif action == action_add:
+            dlg = AddWorkerDialog(self)
+            if dlg.exec() == QDialog.Accepted:
+                name, shift = dlg.getValues()
+                if key not in self.schedule_manager.schedule:
+                    self.schedule_manager.schedule[key] = []
+                self.schedule_manager.schedule[key].append({"name": name, "shift": shift, "absent": False, "tardy": False})
+                self.schedule_manager.save_schedule()
+                self.updateCells()
+        elif action == action_delete:
+            if key in self.schedule_manager.schedule:
+                dlg = DeleteWorkerDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    indices = dlg.getSelectedIndices()
+                    if indices:
+                        for i in sorted(indices, reverse=True):
+                            del self.schedule_manager.schedule[key][i]
+                        if not self.schedule_manager.schedule[key]:
+                            del self.schedule_manager.schedule[key]
+                        self.schedule_manager.save_schedule()
+                        self.updateCells()
 
 # ----- 공휴일 정보 가져오기 (전체년도, 캐싱 포함) -----
 def fetch_holiday_info_for_year(year):
@@ -346,7 +485,6 @@ class DateRangeDialog(QDialog):
         mainLayout = QVBoxLayout(self)
         mainLayout.addLayout(cal_layout)
         mainLayout.addWidget(buttons)
-        
     def getDateRange(self):
         start_date = self.startCalendar.selectedDate()
         end_date = self.endCalendar.selectedDate()
@@ -368,7 +506,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
         
-        # 좌측 패널: 추가/삭제/엑셀 출력/공휴일 정보 가져오기/달력 캡쳐/로그 확인
+        # 좌측 패널
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_widget.setMaximumWidth(300)
@@ -401,7 +539,7 @@ class MainWindow(QMainWindow):
             weekday_vlayout.addLayout(hbox)
             self.weekday_checks[num] = (day_cb, biweekly_cb, biweekly_combo)
         add_form.addRow("요일 선택:", weekday_vlayout)
-        # 기간 선택과 "요번달" 체크박스 추가 (근무자 추가)
+        # 기간 선택 및 "요번달" 체크박스 (근무자 추가)
         date_range_layout = QHBoxLayout()
         self.date_range_display = QLineEdit()
         self.date_range_display.setReadOnly(True)
@@ -413,7 +551,7 @@ class MainWindow(QMainWindow):
         date_range_layout.addWidget(self.date_range_button)
         date_range_layout.addWidget(self.this_month_add)
         add_form.addRow("기간:", date_range_layout)
-        add_layout.addLayout(add_form)
+        add_layout.addRow(add_form)
         self.add_button = QPushButton("근무자 추가")
         self.add_button.clicked.connect(self.add_employee_schedule)
         add_layout.addWidget(self.add_button)
@@ -437,7 +575,7 @@ class MainWindow(QMainWindow):
         del_date_layout.addWidget(self.del_date_range_button)
         del_date_layout.addWidget(self.this_month_del)
         del_form.addRow("기간:", del_date_layout)
-        del_layout.addLayout(del_form)
+        del_layout.addRow(del_form)
         self.del_button = QPushButton("근무자 삭제")
         self.del_button.clicked.connect(self.delete_employee_schedule)
         del_layout.addWidget(self.del_button)
@@ -482,8 +620,9 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_widget)
         self.dayHeader = DayOfWeekHeader()
         right_layout.addWidget(self.dayHeader)
-        self.calendar = CustomCalendar(self.schedule_manager, self.holiday_info, self.name_color_map)
-        self.calendar.setMinimumSize(800, 800)
+        # 우클릭 컨텍스트 메뉴가 있는 캘린더 위젯 사용
+        self.calendar = CalendarWithContextMenu(self.schedule_manager, self.holiday_info, self.name_color_map)
+        self.calendar.setMinimumSize(1200, 900)
         right_layout.addWidget(self.calendar)
         main_layout.addWidget(right_widget)
         
@@ -612,7 +751,11 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "완료", "공휴일 정보를 가져왔습니다.")
 
     def capture_calendar(self):
-        pixmap = self.calendar.grab()
+        # 원하는 크기로 QPixmap 생성 후 render()를 사용하여 캡쳐
+        size = self.calendar.size()
+        pixmap = QPixmap(size)
+        pixmap.fill(self.palette().color(QPalette.Base))
+        self.calendar.render(pixmap)
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
         filename = f"{timestamp}.jpg"
         if pixmap.save(filename, "JPG"):
@@ -623,6 +766,53 @@ class MainWindow(QMainWindow):
     def open_log_dialog(self):
         log_dialog = LogDialog("debug_log.txt", self)
         log_dialog.exec()
+
+# ----- CalendarWithContextMenu (우클릭 메뉴 추가) -----
+class CalendarWithContextMenu(CustomCalendar):
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        action_shift_change = menu.addAction("근무조 변경")
+        action_attendance = menu.addAction("출석 상태 변경")
+        action_add = menu.addAction("해당일자 근무자 추가")
+        action_delete = menu.addAction("해당일자 근무자 삭제")
+        action = menu.exec(event.globalPos())
+        date = self.selectedDate()
+        key = date.toString(Qt.ISODate)
+        if action == action_shift_change:
+            if key in self.schedule_manager.schedule:
+                dlg = ShiftChangeDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    indices = dlg.getSelectedIndices()
+                    if indices:
+                        self.schedule_manager.toggle_shift(date, indices)
+                        self.updateCells()
+        elif action == action_attendance:
+            if key in self.schedule_manager.schedule:
+                dlg = AttendanceDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    self.schedule_manager.save_schedule()
+                    self.updateCells()
+        elif action == action_add:
+            dlg = AddWorkerDialog(self)
+            if dlg.exec() == QDialog.Accepted:
+                name, shift = dlg.getValues()
+                if key not in self.schedule_manager.schedule:
+                    self.schedule_manager.schedule[key] = []
+                self.schedule_manager.schedule[key].append({"name": name, "shift": shift, "absent": False, "tardy": False})
+                self.schedule_manager.save_schedule()
+                self.updateCells()
+        elif action == action_delete:
+            if key in self.schedule_manager.schedule:
+                dlg = DeleteWorkerDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    indices = dlg.getSelectedIndices()
+                    if indices:
+                        for i in sorted(indices, reverse=True):
+                            del self.schedule_manager.schedule[key][i]
+                        if not self.schedule_manager.schedule[key]:
+                            del self.schedule_manager.schedule[key]
+                        self.schedule_manager.save_schedule()
+                        self.updateCells()
 
 # ----- 공휴일 정보 가져오기 (전체년도, 캐싱 포함) -----
 def fetch_holiday_info_for_year(year):
@@ -668,9 +858,38 @@ def fetch_holiday_info_for_year(year):
         logging.error("캐시 저장 오류: %s", e)
     return holiday_info
 
+# ----- DateRangeDialog -----
+class DateRangeDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("날짜 범위 선택")
+        cal_layout = QHBoxLayout()
+        self.startCalendar = QCalendarWidget()
+        self.endCalendar = QCalendarWidget()
+        self.startCalendar.setMinimumSize(300, 300)
+        self.endCalendar.setMinimumSize(300, 300)
+        self.startCalendar.setStyleSheet("font-size: 14pt;")
+        self.endCalendar.setStyleSheet("font-size: 14pt;")
+        cal_layout.addWidget(self.startCalendar)
+        cal_layout.addWidget(self.endCalendar)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        mainLayout = QVBoxLayout(self)
+        mainLayout.addLayout(cal_layout)
+        mainLayout.addWidget(buttons)
+    def getDateRange(self):
+        start_date = self.startCalendar.selectedDate()
+        end_date = self.endCalendar.selectedDate()
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+        return start_date, end_date
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
-    window.resize(1000, 800)
+    # 우클릭 메뉴가 있는 캘린더 위젯으로 교체
+    window.calendar = CalendarWithContextMenu(window.schedule_manager, window.holiday_info, window.name_color_map)
+    window.resize(1200, 900)
     window.show()
     sys.exit(app.exec())
