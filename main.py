@@ -15,9 +15,9 @@ from PySide6.QtWidgets import (
     QDialogButtonBox, QGroupBox, QComboBox, QMenu, QSpinBox, QLabel
 )
 from PySide6.QtCore import QDate, Qt, QRect, QPoint, QSize
-from PySide6.QtGui import QPainter, QColor, QFont, QPalette, QPixmap, QScreen
+from PySide6.QtGui import QPainter, QColor, QFont, QPalette, QPixmap
 
-# 로그 설정 (필요한 경우)
+# 로그 설정
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -37,12 +37,12 @@ class CaptureSettingsDialog(QDialog):
         offset_layout = QHBoxLayout()
         offset_layout.addWidget(QLabel("X 오프셋:"))
         self.xOffsetSpin = QSpinBox()
-        self.xOffsetSpin.setRange(-500, 500)
+        self.xOffsetSpin.setRange(0, 5000)
         self.xOffsetSpin.setValue(0)
         offset_layout.addWidget(self.xOffsetSpin)
         offset_layout.addWidget(QLabel("Y 오프셋:"))
         self.yOffsetSpin = QSpinBox()
-        self.yOffsetSpin.setRange(-500, 500)
+        self.yOffsetSpin.setRange(0, 5000)
         self.yOffsetSpin.setValue(0)
         offset_layout.addWidget(self.yOffsetSpin)
         layout.addLayout(offset_layout)
@@ -51,13 +51,13 @@ class CaptureSettingsDialog(QDialog):
         size_layout = QHBoxLayout()
         size_layout.addWidget(QLabel("너비:"))
         self.widthSpin = QSpinBox()
-        self.widthSpin.setRange(100, 3000)
-        self.widthSpin.setValue(1200)
+        self.widthSpin.setRange(100, 5000)
+        self.widthSpin.setValue(4000)
         size_layout.addWidget(self.widthSpin)
         size_layout.addWidget(QLabel("높이:"))
         self.heightSpin = QSpinBox()
-        self.heightSpin.setRange(100, 3000)
-        self.heightSpin.setValue(900)
+        self.heightSpin.setRange(100, 5000)
+        self.heightSpin.setValue(4000)
         size_layout.addWidget(self.heightSpin)
         layout.addLayout(size_layout)
         
@@ -187,7 +187,8 @@ class DayOfWeekHeader(QWidget):
         painter = QPainter(self)
         width = self.width() / 7
         height = self.height()
-        font = QFont("Arial", int(height * 0.5))
+        # 기존의 글자 크기 0.5배 대신 2배: 즉, 0.5*2=1배로 설정 (또는 고정값 사용 가능)
+        font = QFont("Arial", int(height * 1.0))
         painter.setFont(font)
         for i, day in enumerate(self.days):
             rect = QRect(int(i * width), 0, int(width), height)
@@ -333,6 +334,8 @@ class CustomCalendar(QCalendarWidget):
         self.schedule_manager = schedule_manager
         self.holiday_info = holiday_info
         self.name_color_map = name_color_map
+        # 기본 근무자/근무조 텍스트 크기 (기본 10; 2배 적용하면 20)
+        self.entry_font_size = 10  
         self.setGridVisible(True)
         self.setHorizontalHeaderFormat(QCalendarWidget.NoHorizontalHeader)
         self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
@@ -346,34 +349,33 @@ class CustomCalendar(QCalendarWidget):
         center_rect = QRect(rect.center().x() - 8, rect.center().y() - 6, 16, 12)
         painter.fillRect(center_rect, bg_color)
         
-        # 날짜 숫자 (좌측 상단)
+        # 날짜 숫자 (좌측 상단) - 기존 14를 2배인 28로 변경
         date_color = Qt.black
         date_str = date.toString("yyyy-MM-dd")
         if date.dayOfWeek() in (6, 7) or date_str in self.holiday_info:
             date_color = QColor("red")
-        date_font = QFont("Arial", 14, QFont.Bold)
+        date_font = QFont("Arial", 20, QFont.Bold)
         painter.setFont(date_font)
         painter.setPen(date_color)
         painter.drawText(rect.adjusted(5, 5, -5, -5), Qt.AlignTop | Qt.AlignLeft, str(date.day()))
         
-        # 공휴일명칭 (오른쪽 아래)
+        # 공휴일명칭 (오른쪽 아래) - 기존 8를 16로 변경
         if date_str in self.holiday_info:
             holiday_name = self.holiday_info[date_str]
-            holiday_font = QFont("Arial", 8)
+            holiday_font = QFont("Arial", 18)
             painter.setFont(holiday_font)
             painter.setPen(QColor("red"))
             painter.drawText(rect.adjusted(0, 0, -2, -2), Qt.AlignBottom | Qt.AlignRight, holiday_name)
         
-        # 스케줄 항목 출력
+        # 스케줄 항목 출력 (근무자/근무조 텍스트) - 글자 크기를 2배 (entry_font_size * 2)
         key = date.toString(Qt.ISODate)
         if key in self.schedule_manager.schedule:
-            entries = sorted(self.schedule_manager.schedule[key], key=lambda x: 0 if x["shift"]=="AM" else 1)
-            entry_font_size = 10
+            entry_font_size = self.entry_font_size * 2  # 2배 적용
             entry_font = QFont("Arial", entry_font_size, QFont.Bold)
             painter.setFont(entry_font)
             line_height = entry_font_size + 2
             entry_y = rect.y() + 30
-            for entry in entries:
+            for entry in sorted(self.schedule_manager.schedule[key], key=lambda x: 0 if x["shift"]=="AM" else 1):
                 shift = entry["shift"]
                 name = entry["name"]
                 if entry.get("absent", False):
@@ -521,6 +523,53 @@ class DateRangeDialog(QDialog):
             start_date, end_date = end_date, start_date
         return start_date, end_date
 
+# ----- CalendarWithContextMenu -----
+class CalendarWithContextMenu(CustomCalendar):
+    def contextMenuEvent(self, event):
+        menu = QMenu(self)
+        action_shift_change = menu.addAction("근무조 변경")
+        action_attendance = menu.addAction("출석 상태 변경")
+        action_add = menu.addAction("해당일자 근무자 추가")
+        action_delete = menu.addAction("해당일자 근무자 삭제")
+        action = menu.exec(event.globalPos())
+        date = self.selectedDate()
+        key = date.toString(Qt.ISODate)
+        if action == action_shift_change:
+            if key in self.schedule_manager.schedule:
+                dlg = ShiftChangeDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    indices = dlg.getSelectedIndices()
+                    if indices:
+                        self.schedule_manager.toggle_shift(date, indices)
+                        self.updateCells()
+        elif action == action_attendance:
+            if key in self.schedule_manager.schedule:
+                dlg = AttendanceDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    self.schedule_manager.save_schedule()
+                    self.updateCells()
+        elif action == action_add:
+            dlg = AddWorkerDialog(self)
+            if dlg.exec() == QDialog.Accepted:
+                name, shift = dlg.getValues()
+                if key not in self.schedule_manager.schedule:
+                    self.schedule_manager.schedule[key] = []
+                self.schedule_manager.schedule[key].append({"name": name, "shift": shift, "absent": False, "tardy": False})
+                self.schedule_manager.save_schedule()
+                self.updateCells()
+        elif action == action_delete:
+            if key in self.schedule_manager.schedule:
+                dlg = DeleteWorkerDialog(self.schedule_manager.schedule[key], self)
+                if dlg.exec() == QDialog.Accepted:
+                    indices = dlg.getSelectedIndices()
+                    if indices:
+                        for i in sorted(indices, reverse=True):
+                            del self.schedule_manager.schedule[key][i]
+                        if not self.schedule_manager.schedule[key]:
+                            del self.schedule_manager.schedule[key]
+                        self.schedule_manager.save_schedule()
+                        self.updateCells()
+
 # ----- Main Window -----
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -529,6 +578,9 @@ class MainWindow(QMainWindow):
         self.schedule_manager = ScheduleManager()
         self.holiday_info = fetch_holiday_info_for_year(2025)
         self.name_color_map = {}
+        # 기본 텍스트 크기 (entry_font_size 기본값 10; 캘린더에서는 2배 적용하여 20로 표시됨)
+        self.entry_font_size = 10
+        
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
@@ -538,7 +590,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         left_widget.setMaximumWidth(300)
         
-        # [근무자 추가] 그룹
+        # [근무자 추가] 그룹 (생략: 기존 코드와 동일)
         add_group = QGroupBox("근무자 추가")
         add_layout = QVBoxLayout(add_group)
         add_form = QFormLayout()
@@ -583,7 +635,7 @@ class MainWindow(QMainWindow):
         add_layout.addWidget(self.add_button)
         left_layout.addWidget(add_group)
         
-        # [근무자 삭제] 그룹
+        # [근무자 삭제] 그룹 (생략)
         del_group = QGroupBox("근무자 삭제")
         del_layout = QVBoxLayout(del_group)
         del_form = QFormLayout()
@@ -623,6 +675,8 @@ class MainWindow(QMainWindow):
         holiday_layout.addWidget(self.holiday_button)
         left_layout.addWidget(holiday_group)
         
+        # [글자 크기 설정] 그룹는 삭제하고, 캘린더에서는 2배 크기로 고정 처리
+        
         # [달력 캡쳐] 그룹
         capture_group = QGroupBox("달력 캡쳐")
         capture_layout = QVBoxLayout(capture_group)
@@ -633,15 +687,17 @@ class MainWindow(QMainWindow):
         
         main_layout.addWidget(left_widget)
         
-        # 우측: 달력 및 요일 헤더
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
+        # 우측: 달력 및 요일 헤더를 포함하는 컨테이너 위젯
+        self.right_widget = QWidget()
+        right_layout = QVBoxLayout(self.right_widget)
         self.dayHeader = DayOfWeekHeader()
         right_layout.addWidget(self.dayHeader)
         self.calendar = CalendarWithContextMenu(self.schedule_manager, self.holiday_info, self.name_color_map)
         self.calendar.setMinimumSize(1200, 900)
+        # 초기 글자 크기 전달 (캘린더에서는 2배 적용되므로 entry_font_size=10 → 실제 20)
+        self.calendar.entry_font_size = self.entry_font_size
         right_layout.addWidget(self.calendar)
-        main_layout.addWidget(right_widget)
+        main_layout.addWidget(self.right_widget)
         
         self.add_start_date = None
         self.add_end_date = None
@@ -774,153 +830,31 @@ class MainWindow(QMainWindow):
             return
         x_offset, y_offset, desired_width, desired_height = settingsDialog.getSettings()
         
-        # 메인 윈도우 전체 캡쳐
-        screen = QApplication.primaryScreen()
-        full_pixmap = screen.grabWindow(self.winId())
+        # 캡쳐 전에 강제 업데이트
+        self.right_widget.repaint()
+        QApplication.processEvents()
         
-        # centralWidget 기준 오프셋 계산
-        parent_pos = self.centralWidget().mapToGlobal(QPoint(0, 0))
-        cal_pos = self.calendar.mapToGlobal(QPoint(0, 0))
-        offset = cal_pos - parent_pos
+        # 우측 위젯(요일 헤더 + 캘린더 전체)을 grab() 하여 캡쳐
+        full_pixmap = self.right_widget.grab()
         
-        # 사용자 설정 오프셋 적용
-        offset.setX(offset.x() + x_offset)
-        offset.setY(offset.y() + y_offset)
-        
-        # 캘린더 위젯 영역 대신 사용자 지정 영역 사용
-        cal_rect = QRect(offset, QSize(desired_width, desired_height))
-        cropped_pixmap = full_pixmap.copy(cal_rect)
+        # 사용자가 지정한 영역으로 crop
+        crop_rect = QRect(x_offset, y_offset, desired_width, desired_height)
+        cropped_pixmap = full_pixmap.copy(crop_rect)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
-        filename = f"{timestamp}.jpg"
-        if cropped_pixmap.save(filename, "JPG"):
+        filename = f"{timestamp}.png"
+        if cropped_pixmap.save(filename, "PNG"):
             QMessageBox.information(self, "캡쳐 완료", f"캡쳐 파일이 저장되었습니다.\n파일명: {filename}")
         else:
             QMessageBox.warning(self, "캡쳐 오류", "캡쳐 저장에 실패하였습니다.")
 
-# ----- CalendarWithContextMenu -----
-class CalendarWithContextMenu(CustomCalendar):
-    def contextMenuEvent(self, event):
-        menu = QMenu(self)
-        action_shift_change = menu.addAction("근무조 변경")
-        action_attendance = menu.addAction("출석 상태 변경")
-        action_add = menu.addAction("해당일자 근무자 추가")
-        action_delete = menu.addAction("해당일자 근무자 삭제")
-        action = menu.exec(event.globalPos())
-        date = self.selectedDate()
-        key = date.toString(Qt.ISODate)
-        if action == action_shift_change:
-            if key in self.schedule_manager.schedule:
-                dlg = ShiftChangeDialog(self.schedule_manager.schedule[key], self)
-                if dlg.exec() == QDialog.Accepted:
-                    indices = dlg.getSelectedIndices()
-                    if indices:
-                        self.schedule_manager.toggle_shift(date, indices)
-                        self.updateCells()
-        elif action == action_attendance:
-            if key in self.schedule_manager.schedule:
-                dlg = AttendanceDialog(self.schedule_manager.schedule[key], self)
-                if dlg.exec() == QDialog.Accepted:
-                    self.schedule_manager.save_schedule()
-                    self.updateCells()
-        elif action == action_add:
-            dlg = AddWorkerDialog(self)
-            if dlg.exec() == QDialog.Accepted:
-                name, shift = dlg.getValues()
-                if key not in self.schedule_manager.schedule:
-                    self.schedule_manager.schedule[key] = []
-                self.schedule_manager.schedule[key].append({"name": name, "shift": shift, "absent": False, "tardy": False})
-                self.schedule_manager.save_schedule()
-                self.updateCells()
-        elif action == action_delete:
-            if key in self.schedule_manager.schedule:
-                dlg = DeleteWorkerDialog(self.schedule_manager.schedule[key], self)
-                if dlg.exec() == QDialog.Accepted:
-                    indices = dlg.getSelectedIndices()
-                    if indices:
-                        for i in sorted(indices, reverse=True):
-                            del self.schedule_manager.schedule[key][i]
-                        if not self.schedule_manager.schedule[key]:
-                            del self.schedule_manager.schedule[key]
-                        self.schedule_manager.save_schedule()
-                        self.updateCells()
-
-# ----- 공휴일 정보 가져오기 -----
-def fetch_holiday_info_for_year(year):
-    cache_file = f"holidays_{year}.json"
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, "r", encoding="utf-8") as f:
-                holiday_info = json.load(f)
-            logging.debug("캐시 로드 성공: %s", cache_file)
-            return holiday_info
-        except Exception as e:
-            logging.error("캐시 로드 오류: %s", e)
-    holiday_info = {}
-    try:
-        with open("key.txt", "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-            decoding_key = lines[1]
-    except Exception as e:
-        logging.error("key.txt 오류: %s", e)
-        return holiday_info
-    for month in range(1, 13):
-        month_str = f"{month:02d}"
-        url = (f"http://apis.data.go.kr/B090041/openapi/service/SpcdeInfoService/"
-               f"getRestDeInfo?solYear={year}&solMonth={month_str}&ServiceKey={decoding_key}")
-        try:
-            response = requests.get(url)
-            tree = ET.fromstring(response.content)
-            for item in tree.iter("item"):
-                locdate = item.find("locdate")
-                date_nm = item.find("dateName")
-                if locdate is not None and locdate.text and date_nm is not None and date_nm.text:
-                    d = locdate.text
-                    formatted = f"{d[:4]}-{d[4:6]}-{d[6:]}"
-                    holiday_info[formatted] = date_nm.text
-            logging.debug("월 %s 정보 가져옴", month_str)
-        except Exception as e:
-            logging.error("API 호출 오류 (월 %s): %s", month_str, e)
-    try:
-        with open(cache_file, "w", encoding="utf-8") as f:
-            json.dump(holiday_info, f, ensure_ascii=False, indent=2)
-        logging.debug("캐시 저장: %s", cache_file)
-    except Exception as e:
-        logging.error("캐시 저장 오류: %s", e)
-    return holiday_info
-
-# ----- DateRangeDialog -----
-class DateRangeDialog(QDialog):
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("날짜 범위 선택")
-        cal_layout = QHBoxLayout()
-        self.startCalendar = QCalendarWidget()
-        self.endCalendar = QCalendarWidget()
-        self.startCalendar.setMinimumSize(300, 300)
-        self.endCalendar.setMinimumSize(300, 300)
-        self.startCalendar.setStyleSheet("font-size: 14pt;")
-        self.endCalendar.setStyleSheet("font-size: 14pt;")
-        cal_layout.addWidget(self.startCalendar)
-        cal_layout.addWidget(self.endCalendar)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        mainLayout = QVBoxLayout(self)
-        mainLayout.addLayout(cal_layout)
-        mainLayout.addWidget(buttons)
-    def getDateRange(self):
-        start_date = self.startCalendar.selectedDate()
-        end_date = self.endCalendar.selectedDate()
-        if start_date > end_date:
-            start_date, end_date = end_date, start_date
-        return start_date, end_date
-
+# ----- Main Execution -----
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     # 우클릭 메뉴가 있는 캘린더 위젯으로 교체
     window.calendar = CalendarWithContextMenu(window.schedule_manager, window.holiday_info, window.name_color_map)
+    window.calendar.entry_font_size = window.entry_font_size  # 초기 텍스트 크기 적용
     window.resize(1200, 900)
     window.show()
     sys.exit(app.exec())
