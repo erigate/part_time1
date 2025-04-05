@@ -12,9 +12,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QCalendarWidget,
     QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit,
     QPushButton, QCheckBox, QMessageBox, QDialog,
-    QDialogButtonBox, QGroupBox, QComboBox, QMenu, QSpinBox, QLabel
+    QDialogButtonBox, QGroupBox, QComboBox, QMenu, QSpinBox, QLabel,
+    QFileDialog
 )
-from PySide6.QtCore import QDate, Qt, QRect, QPoint, QSize
+from PySide6.QtCore import QDate, Qt, QRect, QPoint, QSize, QStandardPaths
 from PySide6.QtGui import QPainter, QColor, QFont, QPalette, QPixmap
 
 # 로그 설정
@@ -187,7 +188,6 @@ class DayOfWeekHeader(QWidget):
         painter = QPainter(self)
         width = self.width() / 7
         height = self.height()
-        # 기존의 글자 크기 0.5배 대신 2배: 즉, 0.5*2=1배로 설정 (또는 고정값 사용 가능)
         font = QFont("Arial", int(height * 1.0))
         painter.setFont(font)
         for i, day in enumerate(self.days):
@@ -590,7 +590,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         left_widget.setMaximumWidth(300)
         
-        # [근무자 추가] 그룹 (생략: 기존 코드와 동일)
+        # [근무자 추가] 그룹
         add_group = QGroupBox("근무자 추가")
         add_layout = QVBoxLayout(add_group)
         add_form = QFormLayout()
@@ -635,7 +635,7 @@ class MainWindow(QMainWindow):
         add_layout.addWidget(self.add_button)
         left_layout.addWidget(add_group)
         
-        # [근무자 삭제] 그룹 (생략)
+        # [근무자 삭제] 그룹
         del_group = QGroupBox("근무자 삭제")
         del_layout = QVBoxLayout(del_group)
         del_form = QFormLayout()
@@ -674,8 +674,6 @@ class MainWindow(QMainWindow):
         self.holiday_button.clicked.connect(self.fetch_holiday_info)
         holiday_layout.addWidget(self.holiday_button)
         left_layout.addWidget(holiday_group)
-        
-        # [글자 크기 설정] 그룹는 삭제하고, 캘린더에서는 2배 크기로 고정 처리
         
         # [달력 캡쳐] 그룹
         capture_group = QGroupBox("달력 캡쳐")
@@ -841,8 +839,16 @@ class MainWindow(QMainWindow):
         crop_rect = QRect(x_offset, y_offset, desired_width, desired_height)
         cropped_pixmap = full_pixmap.copy(crop_rect)
         
+        # 기본 저장 경로: Downloads 폴더, 파일명은 타임스탬프 기반
         timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M")
-        filename = f"{timestamp}.png"
+        default_dir = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
+        default_path = os.path.join(default_dir, f"{timestamp}.png")
+        
+        # 파일 저장 위치 선택 대화상자 실행
+        filename, _ = QFileDialog.getSaveFileName(self, "저장 위치 선택", default_path, "PNG Files (*.png)")
+        if not filename:
+            return
+        
         if cropped_pixmap.save(filename, "PNG"):
             QMessageBox.information(self, "캡쳐 완료", f"캡쳐 파일이 저장되었습니다.\n파일명: {filename}")
         else:
